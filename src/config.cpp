@@ -30,13 +30,6 @@ using namespace Poco::Util;
 #include "fmjpeg2k/djencode.h"
 #include "fmjpeg2k/djdecode.h"
 
-#include "dcmtk/dcmjpls/djrparam.h"   /* for class DJLSRepresentationParameter */
-
-// check DCMTK functionality
-#if !defined(WIDE_CHAR_FILE_IO_FUNCTIONS) && defined(_WIN32)
-#error "DCMTK and this program must be compiled with DCMTK_WIDE_CHAR_FILE_IO_FUNCTIONS"
-#endif
-
 #ifdef _UNDEFINEDUNICODE
 #define _UNICODE 1
 #define UNICODE 1
@@ -67,8 +60,8 @@ void config::registerCodecs()
 	DJLSDecoderRegistration::registerCodecs();
 	DcmRLEEncoderRegistration::registerCodecs();
 	DcmRLEDecoderRegistration::registerCodecs();
-	FMJP2KEncoderRegistration::registerCodecs();
-	FMJP2KDecoderRegistration::registerCodecs();
+	FMJPEG2KEncoderRegistration::registerCodecs();
+	FMJPEG2KDecoderRegistration::registerCodecs();	
 }
 
 
@@ -80,15 +73,15 @@ void config::deregisterCodecs()
 	DJLSEncoderRegistration::cleanup();
 	DcmRLEEncoderRegistration::cleanup();
 	DcmRLEDecoderRegistration::cleanup();
-	FMJP2KEncoderRegistration::cleanup();
-	FMJP2KDecoderRegistration::cleanup();
+	FMJPEG2KEncoderRegistration::cleanup();
+	FMJPEG2KDecoderRegistration::cleanup();	
 }
 
 std::string config::getConnectionString()
 {
 	AutoPtr<WinRegistryConfiguration> pConf(new WinRegistryConfiguration("HKEY_LOCAL_MACHINE\\SOFTWARE\\FrontMotion\\fmdscp"));
 
-	return pConf->getString("ConnectionString", "mysql://host=192.168.1.100 port=3306 user=root db=pacsdb_dev");
+	return pConf->getString("ConnectionString", "mysql:///host=mysql;port=3306;user=root;password=root;db=test");
 }
 
 void config::createDBPool()

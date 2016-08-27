@@ -12,6 +12,8 @@
 #include "Poco/DateTimeFormatter.h"
 #include <iostream>
 
+#include <aws/core/Aws.h>
+
 // work around the fact that dcmtk doesn't work in unicode mode, so all string operation needs to be converted from/to mbcs
 #ifdef _UNICODE
 #undef _UNICODE
@@ -25,6 +27,12 @@
 #ifdef _UNDEFINEDUNICODE
 #define _UNICODE 1
 #define UNICODE 1
+#endif
+
+
+// Visual Leak Detector
+#if defined(_WIN32) && defined(_DEBUG) && !defined(_WIN64)
+#include <vld.h>
 #endif
 
 using namespace Poco;
@@ -85,12 +93,21 @@ protected:
 	int main(const ArgVec& args)
 	{	
 		if (!_helpRequested)
-		{
-			server s;
+		{			
+			Aws::SDKOptions options;
+			options.loggingOptions.logLevel = Aws::Utils::Logging::LogLevel::Info;
+			Aws::InitAPI(options);
+
+			server s(boost::bind(ServerApplication::terminate));
 			s.run_async();
+			
+			// wait for OS to tell us to stop
 			waitForTerminationRequest();
+
+			// stop server			
 			s.stop();
-			s.join();
+
+			Aws::ShutdownAPI(options);
 		}
 		return Application::EXIT_OK;
 	}

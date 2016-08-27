@@ -4,13 +4,23 @@
 #include "model.h"
 #include "config.h"
 #include "util.h"
-
 #include <boost/algorithm/string.hpp>
 #include <set>
 #include <boost/date_time/gregorian/gregorian.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include "boost/date_time/local_time/local_time.hpp"
 #include <codecvt>
+
+#include <aws/core/client/ClientConfiguration.h>
+#include <aws/s3/S3Client.h>
+#include <aws/transfer/TransferClient.h>
+#include <aws/transfer/UploadFileRequest.h>
+#include <aws/s3/model/GetBucketLocationRequest.h>
+using namespace Aws::Client;
+using namespace Aws::S3;
+using namespace Aws::S3::Model;
+using namespace Aws::Transfer;
+
 
 // work around the fact that dcmtk doesn't work in unicode mode, so all string operation needs to be converted from/to mbcs
 #ifdef _UNICODE
@@ -49,20 +59,11 @@ OFCondition StoreHandler::handleSTORERequest(boost::filesystem::path filename)
 	dfile.getDataset()->findAndGetOFString(DCM_SeriesInstanceUID, seriesuid);
 	dfile.getDataset()->findAndGetOFString(DCM_SOPInstanceUID, sopuid);
 
-	if (studyuid.length() == 0)
-	{
-		// DEBUGLOG(sessionguid, DB_ERROR, L"No Study UID\r\n");
-		return status;
-	}
-	if (seriesuid.length() == 0)
-	{
-		// DEBUGLOG(sessionguid, DB_ERROR, L"No Series UID\r\n");
-		return status;
-	}
-	if (sopuid.length() == 0)
+	if (studyuid.length() == 0 || seriesuid.length() == 0 || sopuid.length() == 0)
 	{
 		// DEBUGLOG(sessionguid, DB_ERROR, L"No SOP UID\r\n");
-		return status;
+		boost::filesystem::remove(filename);
+		return OFCondition(OFM_dcmqrdb, 1, OF_error, "One or more uid is blank");;
 	}
 
 	boost::filesystem::path newpath = config::getStoragePath();
@@ -71,7 +72,7 @@ OFCondition StoreHandler::handleSTORERequest(boost::filesystem::path filename)
 	boost::filesystem::create_directories(newpath);
 	newpath /= std::string(sopuid.c_str()) + ".dcm";
 
-	
+
 	std::stringstream msg;
 #ifdef _WIN32
 	// on Windows, boost::filesystem::path is a wstring, so we need to convert to utf8
@@ -81,9 +82,8 @@ OFCondition StoreHandler::handleSTORERequest(boost::filesystem::path filename)
 #endif
 	DCMNET_INFO(msg.str());
 
-
 	dfile.getDataset()->chooseRepresentation(EXS_JPEGLSLossless, NULL);
-	if(dfile.getDataset()->canWriteXfer(EXS_JPEGLSLossless))
+	if (dfile.getDataset()->canWriteXfer(EXS_JPEGLSLossless))
 	{
 		dfile.getDataset()->loadAllDataIntoMemory();
 
@@ -98,6 +98,10 @@ OFCondition StoreHandler::handleSTORERequest(boost::filesystem::path filename)
 		DCMNET_INFO("Copied");
 	}
 
+	// tell upstream about the object and get an S3 upload info
+	
+	// UploadToS3(newpath, sopuid.c_str(), seriesuid.c_str(), studyuid.c_str());
+	
 	// now try to add the file into the database
 	if(!AddDICOMFileInfoToDatabase(newpath))
 	{
@@ -110,6 +114,53 @@ OFCondition StoreHandler::handleSTORERequest(boost::filesystem::path filename)
 	boost::filesystem::remove(filename);
 	
 	return status;
+}
+
+OFCondition StoreHandler::UploadToS3(boost::filesystem::path filename, std::string studyuid, std::string sopuid, std::string seriesuid)
+{
+	// s3path += std::string("/") + seriesuid.c_str();
+	// s3path += std::string("/") + std::string(sopuid.c_str()) + ".dcm";
+
+
+	// upload to S3
+	// s3.aws.amazon.com/siteid/studyuid/seriesuid/sopuid.dcm
+	TransferClientConfiguration transferConfig;
+	transferConfig.m_uploadBufferCount = 20;
+
+	std::string bucket = "draconpern-buildcache";
+
+	static const char* ALLOCATION_TAG = "TransferTests";
+	ClientConfiguration config;
+	config.region = Aws::Region::US_EAST_1;
+
+	std::shared_ptr<S3Client> m_s3Client = Aws::MakeShared<S3Client>(ALLOCATION_TAG, config, false);
+
+	/*GetBucketLocationRequest locationRequest;
+	locationRequest.SetBucket(bucket);
+	auto locationOutcome = m_s3Client->GetBucketLocation(locationRequest);
+	config.region = locationOutcome.GetResult().GetLocationConstraint();
+	*/
+
+	std::shared_ptr<TransferClient> m_transferClient = Aws::MakeShared<TransferClient>(ALLOCATION_TAG, m_s3Client, transferConfig);
+
+	// s3path += std::string("/") + seriesuid.c_str();
+	// s3path += std::string("/") + std::string(sopuid.c_str()) + ".dcm";
+
+	std::string s3path = std::string(sopuid.c_str()) + ".dcm";
+
+	std::shared_ptr<UploadFileRequest> requestPtr = m_transferClient->UploadFile(filename.string(), bucket, s3path.c_str(), "", false, true);
+	requestPtr->WaitUntilDone();
+	if (!requestPtr->CompletedSuccessfully())
+	{
+		DCMNET_ERROR(requestPtr->GetFailure().c_str());
+		return OFCondition(OFM_dcmqrdb, 1, OF_error, requestPtr->GetFailure().c_str());
+	}
+	else
+	{
+		// tell upstream we are done with S3 upload
+		return EC_Normal;
+	}
+
 }
 
 bool StoreHandler::AddDICOMFileInfoToDatabase(boost::filesystem::path filename)
@@ -155,7 +206,7 @@ bool StoreHandler::AddDICOMFileInfoToDatabase(boost::filesystem::path filename)
 				"PatientSex,"
 				"PatientBirthDate,"
 				"ReferringPhysicianName,"
-				"created_at,updated_at"
+				"createdAt,updatedAt"
 				" FROM patient_studies WHERE StudyInstanceUID = ?",
 				into(patientstudies),
 				use(studyuid);
@@ -232,7 +283,7 @@ bool StoreHandler::AddDICOMFileInfoToDatabase(boost::filesystem::path filename)
 					"PatientSex = ?,"
 					"PatientBirthDate = ?,"
 					"ReferringPhysicianName = ?,"
-					"created_at = ?, updated_at = ?"
+					"createdAt = ?, updatedAt = ?"
 					" WHERE id = ?",
 					use(patientstudy),
 					use(patientstudy.id);
@@ -243,7 +294,7 @@ bool StoreHandler::AddDICOMFileInfoToDatabase(boost::filesystem::path filename)
 				patientstudy.created_at = Poco::DateTime();
 
 				Poco::Data::Statement insert(dbconnection);
-				insert << "INSERT INTO patient_studies VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				insert << "INSERT INTO patient_studies (id, StudyInstanceUID, StudyID, AccessionNumber, PatientName, PatientID, StudyDate, ModalitiesInStudy, StudyDescription, PatientSex, PatientBirthDate, ReferringPhysicianName, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 					use(patientstudy);
 				insert.execute();
 
@@ -260,8 +311,8 @@ bool StoreHandler::AddDICOMFileInfoToDatabase(boost::filesystem::path filename)
 				"SeriesDescription,"
 				"SeriesNumber,"
 				"SeriesDate,"
-				"created_at,updated_at,"
-				"patient_study_id"
+				"patient_study_id,"
+				"createdAt,updatedAt"				
 				" FROM series WHERE SeriesInstanceUID = ?",
 				into(series_list),
 				use(seriesuid);
@@ -307,8 +358,8 @@ bool StoreHandler::AddDICOMFileInfoToDatabase(boost::filesystem::path filename)
 					"SeriesDescription = ?,"
 					"SeriesNumber = ?,"
 					"SeriesDate = ?,"
-					"created_at = ?, updated_at = ?,"
-					"patient_study_id = ?"
+					"patient_study_id = ?,"
+					"createdAt = ?, updatedAt = ?"
 					" WHERE id = ?",
 					use(series),
 					use(series.id);
@@ -319,7 +370,7 @@ bool StoreHandler::AddDICOMFileInfoToDatabase(boost::filesystem::path filename)
 				series.created_at = Poco::DateTime();		
 
 				Poco::Data::Statement insert(dbconnection);
-				insert << "INSERT INTO series VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				insert << "INSERT INTO series (id, SeriesInstanceUID, Modality, SeriesDescription, SeriesNumber, SeriesDate, patient_study_id, createdAt, updatedAt) VALUES(?, ? , ? , ? , ? , ? , ? , ? , ?)",
 					use(series);
 				insert.execute();
 
@@ -334,8 +385,8 @@ bool StoreHandler::AddDICOMFileInfoToDatabase(boost::filesystem::path filename)
 		instanceselect << "SELECT id,"
 			"SOPInstanceUID,"			
 			"InstanceNumber,"
-			"created_at,updated_at,"
-			"series_id"
+			"series_id,"
+			"createdAt,updatedAt"
 			" FROM instances WHERE SOPInstanceUID = ?",
 			into(instances),
 			use(sopuid);
@@ -363,8 +414,8 @@ bool StoreHandler::AddDICOMFileInfoToDatabase(boost::filesystem::path filename)
 				"id = ?,"
 				"SOPInstanceUID = ?,"
 				"InstanceNumber = ?,"
-				"created_at = ?, updated_at = ?,"
-				"series_id = ?"
+				"series_id = ?,"
+				"createdAt = ?, updatedAt = ?"
 				" WHERE id = ?",
 				use(instance),
 				use(instance.id);
@@ -376,7 +427,7 @@ bool StoreHandler::AddDICOMFileInfoToDatabase(boost::filesystem::path filename)
 			instance.created_at = Poco::DateTime();
 			
 			Poco::Data::Statement insert(dbconnection);
-			insert << "INSERT INTO instances VALUES(?, ?, ?, ?, ?, ?)",
+			insert << "INSERT INTO instances (id, SOPInstanceUID, InstanceNumber, series_id, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)",
 				use(instance);
 			insert.execute();
 

@@ -1,10 +1,13 @@
 #include "config.h"
 
 #include "httpserver.h"
+#include <boost/bind.hpp>
 #include <boost/algorithm/string.hpp>
+#include <boost/property_tree/ptree.hpp>
+#include <boost/property_tree/json_parser.hpp>
 #include <codecvt>
 #include "model.h"
-
+#include "util.h"
 
 // work around the fact that dcmtk doesn't work in unicode mode, so all string operation needs to be converted from/to mbcs
 #ifdef _UNICODE
@@ -28,24 +31,48 @@
 #include "poco/Data/Session.h"
 using namespace Poco::Data::Keywords;
 
-HttpServer::HttpServer() : SimpleWeb::Server<SimpleWeb::HTTP>(8080, 10)
-{	
-	resource["^/studies\\?(.+)$"]["GET"] = SearchForStudies;
-	resource["^/wado\\?(.+)$"]["GET"] = WADO;
-	default_resource["GET"] = NotFound;
+HttpServer::HttpServer(std::function< void(void) > shutdownCallback) :
+	SimpleWeb::Server<SimpleWeb::HTTP>(8080, 10),
+	shutdownCallback(shutdownCallback)
+{
+	resource["^/studies\\?(.+)$"]["GET"] = boost::bind(&HttpServer::SearchForStudies, this, _1, _2);
+	resource["^/wado\\?(.+)$"]["GET"] = boost::bind(&HttpServer::WADO, this, _1, _2);
+	resource["^/api/version"]["GET"] = boost::bind(&HttpServer::Version, this, _1, _2);
+	resource["^/api/shutdown"]["POST"] = boost::bind(&HttpServer::Shutdown, this, _1, _2);
+	default_resource["GET"] = boost::bind(&HttpServer::NotFound, this, _1, _2);
 }
 
+void HttpServer::Version(std::shared_ptr<HttpServer::Response> response, std::shared_ptr<HttpServer::Request> request)
+{
+	boost::property_tree::ptree pt, children;
 
-void HttpServer::NotFound(HttpServer::Response& response, std::shared_ptr<HttpServer::Request> request)
+	std::ostringstream ver;
+	ver << FMDSCP_VERSION;
+	pt.put("version", ver.str());
+
+	std::ostringstream buf;
+	boost::property_tree::json_parser::write_json(buf, pt, true);
+	std::string content = buf.str();
+	*response << std::string("HTTP/1.1 200 Ok\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
+}
+
+void HttpServer::Shutdown(std::shared_ptr<HttpServer::Response> response, std::shared_ptr<HttpServer::Request> request)
+{
+	shutdownCallback();
+	std::string content = "Stoping";
+	*response << std::string("HTTP/1.1 200 Ok\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
+}
+
+void HttpServer::NotFound(std::shared_ptr<HttpServer::Response> response, std::shared_ptr<HttpServer::Request> request)
 {
 	std::string content = "Path not found: " + request->path;
-	response << std::string("HTTP/1.1 404 Not Found\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
+	*response << std::string("HTTP/1.1 404 Not Found\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
 }
 
-void HttpServer::NotAcceptable(HttpServer::Response& response, std::shared_ptr<HttpServer::Request> request)
+void HttpServer::NotAcceptable(std::shared_ptr<HttpServer::Response> response, std::shared_ptr<HttpServer::Request> request)
 {
 	std::string content = "Unable to convert";
-	response << std::string("HTTP/1.1 406 Not Acceptable\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
+	*response << std::string("HTTP/1.1 406 Not Acceptable\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
 }
 
 bool SendAsDICOM(DcmFileFormat &dfile, HttpServer::Response& response, std::string sopuid);
@@ -53,7 +80,7 @@ bool SendAsPDF(DcmFileFormat &dfile, HttpServer::Response& response, std::string
 bool SendAsJPEG(DcmFileFormat &dfile, HttpServer::Response& response, std::string sopuid);
 bool SendAsHTML(DcmFileFormat &dfile, HttpServer::Response& response, std::string sopuid);
 
-void HttpServer::WADO(HttpServer::Response& response, std::shared_ptr<HttpServer::Request> request)
+void HttpServer::WADO(std::shared_ptr<HttpServer::Response> response, std::shared_ptr<HttpServer::Request> request)
 {	
 
 	std::string content;
@@ -64,14 +91,14 @@ void HttpServer::WADO(HttpServer::Response& response, std::shared_ptr<HttpServer
 	if(queries["requestType"] != "WADO")
 	{
 		content = "Not a WADO request";
-		response << std::string("HTTP/1.1 400 Bad Request\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
+		*response << std::string("HTTP/1.1 400 Bad Request\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
 		return;
 	}
 
 	if(queries.find("studyUID") == queries.end() || queries.find("seriesUID") == queries.end() || queries.find("objectUID") == queries.end())	
 	{
 		content = "Required fields studyUID, seriesUID, or objectUID missing.";
-		response << std::string("HTTP/1.1 400 Bad Request\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
+		*response << std::string("HTTP/1.1 400 Bad Request\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
 		return;
 	}
 
@@ -96,7 +123,7 @@ void HttpServer::WADO(HttpServer::Response& response, std::shared_ptr<HttpServer
 			"PatientSex,"
 			"PatientBirthDate,"
 			"ReferringPhysicianName,"
-			"created_at,updated_at"
+			"createdAt,updatedAt"
 			" FROM patient_studies WHERE StudyInstanceUID = ?",
 			into(patient_studies_list),
 			use(queries["studyUID"]);
@@ -105,7 +132,7 @@ void HttpServer::WADO(HttpServer::Response& response, std::shared_ptr<HttpServer
 		if(patient_studies_list.size() != 1)
 		{
 			content = "Unable to find study";
-			response << std::string("HTTP/1.1 404 Not Found\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
+			*response << std::string("HTTP/1.1 404 Not Found\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
 			return;
 		}
 
@@ -116,8 +143,8 @@ void HttpServer::WADO(HttpServer::Response& response, std::shared_ptr<HttpServer
 			"SeriesDescription,"
 			"SeriesNumber,"
 			"SeriesDate,"
-			"created_at,updated_at,"
-			"patient_study_id"
+			"patient_study_id,"
+			"createdAt,updatedAt"
 			" FROM series WHERE SeriesInstanceUID = ?",
 			into(series_list),
 			use(queries["seriesUID"]);	
@@ -126,7 +153,7 @@ void HttpServer::WADO(HttpServer::Response& response, std::shared_ptr<HttpServer
 		if(series_list.size() != 1)
 		{
 			content = "Unable to find series";
-			response << std::string("HTTP/1.1 404 Not Found\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
+			*response << std::string("HTTP/1.1 404 Not Found\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
 			return;
 		}
 
@@ -134,8 +161,8 @@ void HttpServer::WADO(HttpServer::Response& response, std::shared_ptr<HttpServer
 		instanceselect << "SELECT id,"
 			"SOPInstanceUID,"
 			"InstanceNumber,"
-			"created_at,updated_at,"
-			"series_id"
+			"series_id,"
+			"createdAt,updatedAt"			
 			" FROM instances WHERE SOPInstanceUID = ?",
 			into(instances),
 			use(queries["objectUID"]);
@@ -144,14 +171,14 @@ void HttpServer::WADO(HttpServer::Response& response, std::shared_ptr<HttpServer
 		if(instances.size() != 1)
 		{
 			content = "Unable to find instance";		
-			response << std::string("HTTP/1.1 404 Not Found\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
+			*response << std::string("HTTP/1.1 404 Not Found\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
 			return;
 		}
 	}
 	catch(Poco::Data::DataException &e)
 	{
 		content = "Database Error";		
-		response << std::string("HTTP/1.1 503 Service Unavailable\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
+		*response << std::string("HTTP/1.1 503 Service Unavailable\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
 		return;
 	}
 
@@ -166,14 +193,14 @@ void HttpServer::WADO(HttpServer::Response& response, std::shared_ptr<HttpServer
 	if(cond.bad())
 	{
 		content = "Problem loading instance";		
-		response << std::string("HTTP/1.1 500 Internal Server Error\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
+		*response << std::string("HTTP/1.1 500 Internal Server Error\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
 		return;
 	}
 
 	if(queries["anonymize"] == "yes")
 	{
 		content = "anonymization not supported";			
-		response << std::string("HTTP/1.1 406 Not Acceptable\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;		
+		*response << std::string("HTTP/1.1 406 Not Acceptable\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;		
 		return;
 	}
 
@@ -188,24 +215,24 @@ void HttpServer::WADO(HttpServer::Response& response, std::shared_ptr<HttpServer
 	{
 		bool ok = false;
 		if(sopclass == UID_EncapsulatedPDFStorage)
-			ok = SendAsPDF(dfile, response, instances[0].SOPInstanceUID);
+			ok = SendAsPDF(dfile, *response, instances[0].SOPInstanceUID);
 		else if(sopclass.find("1.2.840.10008.5.1.4.1.1.88") != std::string::npos)
-			ok = SendAsHTML(dfile, response, instances[0].SOPInstanceUID);
+			ok = SendAsHTML(dfile, *response, instances[0].SOPInstanceUID);
 		else
-			ok = SendAsJPEG(dfile, response, instances[0].SOPInstanceUID);
+			ok = SendAsJPEG(dfile, *response, instances[0].SOPInstanceUID);
 
 		if(!ok)
-			SendAsDICOM(dfile, response, instances[0].SOPInstanceUID);
+			SendAsDICOM(dfile, *response, instances[0].SOPInstanceUID);
 	}	
 	else if(contenttype == "application/dicom")
 	{
-		SendAsDICOM(dfile, response, instances[0].SOPInstanceUID);
+		SendAsDICOM(dfile, *response, instances[0].SOPInstanceUID);
 	}
 	else if(contenttype == "application/pdf")
 	{
 		if(sopclass == UID_EncapsulatedPDFStorage)
 		{
-			if(!SendAsPDF(dfile, response, instances[0].SOPInstanceUID))
+			if(!SendAsPDF(dfile, *response, instances[0].SOPInstanceUID))
 				NotAcceptable(response, request);
 		}
 		else
@@ -213,16 +240,16 @@ void HttpServer::WADO(HttpServer::Response& response, std::shared_ptr<HttpServer
 	}
 	else if(contenttype == "image/jpeg")
 	{
-		if(!SendAsJPEG(dfile, response, instances[0].SOPInstanceUID))
+		if(!SendAsJPEG(dfile, *response, instances[0].SOPInstanceUID))
 			NotAcceptable(response, request);
 	}
 	else if(contenttype == "text/html")
 	{
-		if(!SendAsHTML(dfile, response, instances[0].SOPInstanceUID))
+		if(!SendAsHTML(dfile, *response, instances[0].SOPInstanceUID))
 			NotAcceptable(response, request);
 	}
 	else
-		SendAsDICOM(dfile, response, instances[0].SOPInstanceUID);
+		SendAsDICOM(dfile, *response, instances[0].SOPInstanceUID);
 }
 
 bool SendAsDICOM(DcmFileFormat &dfile, HttpServer::Response& response, std::string sopuid)
@@ -356,21 +383,132 @@ bool SendAsHTML(DcmFileFormat &dfile, HttpServer::Response& response, std::strin
 	return true;
 }
 
-void HttpServer::SearchForStudies(HttpServer::Response& response, std::shared_ptr<HttpServer::Request> request)
+void HttpServer::SearchForStudies(std::shared_ptr<HttpServer::Response> response, std::shared_ptr<HttpServer::Request> request)
 {
 	std::string content;
 	std::string querystring = request->path_match[1];
 
 	std::map<std::string, std::string> queries;	
 	decode_query(querystring, queries);	
-	if(queries["requestType"] != "WADO")
+	
+
+	// check for Accept = application / dicom + json
+	
+	std::vector<PatientStudy> patient_studies_list;
+	try
 	{
-		content = "Not a WADO request";
-		response << std::string("HTTP/1.1 400 Bad Request\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
+		Poco::Data::Session dbconnection(config::getConnectionString());
+
+		Poco::Data::Statement patientstudiesselect(dbconnection);
+		patientstudiesselect << "SELECT id,"
+			"StudyInstanceUID,"
+			"StudyID,"
+			"AccessionNumber,"
+			"PatientName,"
+			"PatientID,"
+			"StudyDate,"
+			"ModalitiesInStudy,"
+			"StudyDescription,"
+			"PatientSex,"
+			"PatientBirthDate,"
+			"ReferringPhysicianName,"
+			"createdAt,updatedAt"
+			" FROM patient_studies",
+			into(patient_studies_list);
+
+		int parameters = 0;
+
+		if (queries.find("PatientName") != queries.end())
+		{
+			std::string sqlcommand;
+			(parameters == 0) ? (sqlcommand = " WHERE ") : (sqlcommand = " AND ");
+			sqlcommand += "PatientName LIKE ?";
+			patientstudiesselect << sqlcommand, bind("%" + queries["PatientName"] + "%");
+			parameters++;
+		}
+
+		if (queries.find("PatientID") != queries.end())
+		{
+			std::string sqlcommand;
+			(parameters == 0) ? (sqlcommand = " WHERE ") : (sqlcommand = " AND ");
+			sqlcommand += "PatientID LIKE ?";
+			patientstudiesselect << sqlcommand, bind("%" + queries["PatientID"] + "%");
+			parameters++;
+		}
+
+		if (queries.find("StudyDate") != queries.end())
+		{
+			Poco::DateTime d;
+			int t;
+			if (Poco::DateTimeParser::tryParse(queries["StudyDate"], d, t))
+			{
+				Poco::DateTimeFormatter format;
+				std::string sqlcommand;
+				(parameters == 0) ? (sqlcommand = " WHERE ") : (sqlcommand = " AND ");
+				sqlcommand += "StudyDate BETWEEN (? AND ?)";
+				patientstudiesselect << sqlcommand, bind(format.format(d, "%Y%m%d 0:0:0")), bind(format.format(d, "%Y%m%d 23:59:59"));
+				parameters++;
+			}
+		}
+
+		if (queries.find("StudyInstanceUID") != queries.end())
+		{
+			std::string sqlcommand;
+			(parameters == 0) ? (sqlcommand = " WHERE ") : (sqlcommand = " AND ");
+			sqlcommand += "StudyInstanceUID = ?";
+			patientstudiesselect << sqlcommand, bind(queries["StudyInstanceUID"]);
+			parameters++;
+		}
+
+		if (parameters > 0)
+		{
+			patientstudiesselect.execute();
+		}
+		else
+		{
+			// don't perform search
+		}
+
+		
+		/*if (patient_studies_list.size() == 0)
+		{
+			content = "Unable to find study";
+			*response << std::string("HTTP/1.1 204 Not Found\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
+			return;
+		}*/
+
+		boost::property_tree::ptree pt;
+		
+		boost::property_tree::ptree children;
+
+		for (int i = 0; i < patient_studies_list.size(); i++)
+		{
+			boost::property_tree::ptree child;
+			child.add("StudyInstanceUID", patient_studies_list[i].StudyInstanceUID);
+			child.add("PatientName", patient_studies_list[i].PatientName);
+			child.add("PatientID", patient_studies_list[i].PatientID);
+			child.add("StudyDate", ToJSON(patient_studies_list[i].StudyDate));
+			child.add("ModalitiesInStudy", patient_studies_list[i].ModalitiesInStudy);
+			child.add("StudyDescription", patient_studies_list[i].StudyDescription);
+			child.add("PatientSex", patient_studies_list[i].PatientSex);
+			child.add("PatientBirthDate", ToJSON(patient_studies_list[i].PatientBirthDate));
+			children.push_back(std::make_pair("", child));
+		}
+		
+		pt.add_child("result", children);		
+
+		std::ostringstream buf;
+		boost::property_tree::json_parser::write_json(buf, pt, true);
+		std::string content = buf.str();
+		*response << std::string("HTTP/1.1 200 Ok\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
 		return;
 	}
-
-	response << std::string("HTTP/1.1 404 Not Found\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
+	catch (Poco::Data::DataException &e)
+	{
+		content = "Database Error";
+		*response << std::string("HTTP/1.1 503 Service Unavailable\r\nContent-Length: ") << content.length() << "\r\n\r\n" << content;
+		return;
+	}		
 }
 
 
@@ -378,7 +516,7 @@ void HttpServer::decode_query(const std::string &content, std::map<std::string, 
 {
 	// split into a map
 	std::vector<std::string> pairs;
-	boost::split(pairs, content, boost::is_any_of("&"), boost::token_compress_on);
+ 	boost::split(pairs, content, boost::is_any_of("&"), boost::token_compress_on);
 
 	for(int i = 0; i < pairs.size(); i++)
 	{

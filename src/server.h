@@ -9,35 +9,31 @@
 #include "myscp.h"
 
 #include "httpserver.h"
-typedef SimpleWeb::Server<SimpleWeb::HTTP> HttpServer2;
+#include "cloudclient.h"
 
 class server
 {
 public:
-	server();
+	server(boost::function< void(void) > shutdownCallback);
 	~server();
 
 	void run_async();
-	void join();
-	void stop();
+	void stop();		
 	bool shouldStop();
-protected:
+protected:	
 
-	void init_scp();
-
-	void stop(bool flag);
+	void setStop(bool flag);
 	boost::mutex event_mutex;
 	bool stopEvent;
+		
+	boost::thread_group threads;	
 
-	// Create a pool of threads to run all of the io_services.
-	std::vector<boost::shared_ptr<boost::thread> > threads;
-
-	/// The io_service used to perform asynchronous operations.
-	boost::asio::io_service io_service_;
-			
+	// all the background tasks
 	MyDcmSCPPool storageSCP;
 	SenderService senderService;
 	HttpServer httpserver;
+
+	CloudClient cloudclient;
 };
 
 #endif // __SERVER_H__

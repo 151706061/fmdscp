@@ -40,9 +40,10 @@ public:
 
 	// override run simply because we need a copy of assoc
 	virtual OFCondition run(T_ASC_Association* incomingAssoc);
-protected:
+protected:	
 	virtual OFCondition negotiateAssociation();
-
+	bool IsStorageAbstractSyntax(DIC_UI abstractsyntax);
+	bool IsSupportedOperationAbstractSyntax(DIC_UI abstractsyntax);
 	virtual OFCondition handleIncomingCommand(T_DIMSE_Message *incomingMsg,
 		const DcmPresentationContextInfo &presInfo);
 

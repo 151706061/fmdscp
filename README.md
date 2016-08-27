@@ -1,15 +1,14 @@
 # fmdscp
-Windows [![Build status](https://ci.appveyor.com/api/projects/status/foefxfqx4muey6m3/branch/master?svg=true)](https://ci.appveyor.com/project/DraconPern/fmdscp/branch/master)
+Windows [![Build Status](http://home.draconpern.com:8080/buildStatus/icon?job=fmdscp.debug)](http://home.draconpern.com:8080/job/fmdscp.debug)
 
 Simple DICOM SCP
 
-- Available on Windows, OS X, and Linux
+- Available on Windows
 - Supports Unicode file and path.
 - No dll's need to be distributed.
 - Native, no Java required.
 
 ## Download
-Binary http://www.draconpern.com/software/fmdscp
 Source https://github.com/DraconPern/fmdscp
 
 ## Development notes
@@ -18,7 +17,7 @@ The program is http://utf8everywhere.org/
 ## Requirements
 - CMake http://www.cmake.org/download/
 - XCode on OS X
-- Visual Studio 2012 or higher on Windows
+- Visual Studio 2013 or higher on Windows
 - gcc on Linux
 
 ## Third party dependency
@@ -29,9 +28,10 @@ The program is http://utf8everywhere.org/
 - zlib please extract under ./zlib
 - openjpeg http://www.openjpeg.org please extract under ./openjpeg
 - fmjpeg2koj https://github.com/DraconPern/fmjpeg2koj please extract under ./fmjpeg2koj
+- aws SDK
 
 ## Author
 Ing-Long Eric Kuo <draconpern@hotmail.com>
 
 ## License
-This software is licensed under the GPL.  For use under another license, please contact Ing-Long Eric Kuo <eric@frontmotion.com>
+This software is licensed under the GPL.

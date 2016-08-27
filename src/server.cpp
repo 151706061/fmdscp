@@ -4,13 +4,19 @@
 #include "Poco/Data/MySQL/Connector.h"
 #include <boost/asio/io_service.hpp>
 #include "ndcappender.h"
+#include "cloudappender.h"
 
-server::server()// : httpserver(8080, 10)
+server::server(boost::function< void(void) > shutdownCallback) :
+	httpserver(shutdownCallback),
+	cloudclient(shutdownCallback)
 {
 	// configure logging
 	dcmtk::log4cplus::SharedAppenderPtr logfile(new NDCAsFilenameAppender("C:\\PACS\\Log"));
+	dcmtk::log4cplus::SharedAppenderPtr cloud(new CloudAppender(cloudclient));
+
 	dcmtk::log4cplus::Logger my_log = dcmtk::log4cplus::Logger::getRoot();
 	my_log.addAppender(logfile);
+	my_log.addAppender(cloud);
 
 	// do server wide init	
 	Poco::Data::MySQL::Connector::registerConnector();
@@ -28,76 +34,49 @@ server::server()// : httpserver(8080, 10)
 		throw new std::exception(errormsg.c_str());
 	}
 
-	// add scp
-	init_scp();
-	io_service_.post(boost::bind(&MyDcmSCPPool::listen, &storageSCP));
-
-	// add sender
-	io_service_.post(boost::bind(&SenderService::run, &senderService));	
-
-	// add REST API
-	io_service_.post(boost::bind(&HttpServer::start, &httpserver));
 }
 
 server::~server()
 {
 	config::deregisterCodecs();
-}
 
-void server::init_scp()
-{
-
-	
-	/*
-	std::string errormsg;
-	if(!StoreHandler::Test(errormsg))
-		{
-			app.logger().error(errormsg);
-			app.logger().information("Exiting");
-			ServerApplication::terminate();
-			return;
-		}		
-
-		app.logger().information("Set up done.  Listening.");-*/
+	Poco::Data::MySQL::Connector::unregisterConnector();
 }
 
 void server::run_async()
 {	
-	// Create a pool of threads to run all of the tasks assigned to io_services.
-	for (std::size_t i = 0; i < 3; ++i)
-	{
-		boost::shared_ptr<boost::thread> thread(new boost::thread(
-			boost::bind(&boost::asio::io_service::run, &io_service_)));
-		threads.push_back(thread);
-	}
+	// connect to cloud
+	// cloudclient.connect("http://localhost:8090");
 
+	// add scp
+	threads.create_thread(boost::bind(&MyDcmSCPPool::listen, &storageSCP));
 	
-}
+	// add sender
+	threads.create_thread(boost::bind(&SenderService::run, &senderService));
 
-void server::join()
-{
-	// Wait for all threads in the pool to exit.
-	for (std::size_t i = 0; i < threads.size(); ++i)
-		threads[i]->join();
+	httpserver.start();
 }
 
 void server::stop()
 {
-	stop(true);
+	setStop(true);
 
-	// also tell ioservice to stop servicing
-	io_service_.stop();
-
-	// also tell scp to stop
-	storageSCP.stopAfterCurrentAssociations();
+	// stop webserver
+	httpserver.stop();
 
 	// tell senderservice to stop
 	senderService.stop();
+	
+	// tell scp to stop
+	storageSCP.stopAfterCurrentAssociations();
 
-	httpserver.stop();
+	// stop socketio to cloud
+	cloudclient.stop();
+
+	threads.join_all();
 }
 
-void server::stop(bool flag)
+void server::setStop(bool flag)
 {
 	boost::mutex::scoped_lock lk(event_mutex);
 	stopEvent = flag;
